@@ -1173,7 +1173,7 @@ class MllamaForConditionalGeneration(nn.Module, SupportsMultiModal,
         self.image_token_id = config.image_token_index
 
         self.vision_model = MllamaVisionModel(config.vision_config,
-                                              quant_config,
+                                              quant_config=None,
                                               prefix=maybe_prefix(
                                                   prefix, "vision_model"))
         self.language_model = MllamaForCausalLM(
@@ -1184,7 +1184,7 @@ class MllamaForConditionalGeneration(nn.Module, SupportsMultiModal,
             config.vision_config.vision_output_dim,
             config.text_config.hidden_size,
             bias=True,
-            quant_config=quant_config,
+            quant_config=None,
             gather_output=True,
             prefix=maybe_prefix(prefix, "multi_modal_projector"),
         )

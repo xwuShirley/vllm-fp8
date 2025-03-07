@@ -207,7 +207,8 @@ class Fp8LinearMethod(LinearMethodBase):
         weight = ModelWeightParameter(data=torch.empty(
             output_size_per_partition,
             input_size_per_partition,
-            dtype=weight_dtype),
+            dtype=weight_dtype,
+            device="cpu"),
                                       input_dim=1,
                                       output_dim=0,
                                       weight_loader=weight_loader)
@@ -358,6 +359,12 @@ class Fp8LinearMethod(LinearMethodBase):
               layer: torch.nn.Module,
               x: torch.Tensor,
               bias: Optional[torch.Tensor] = None) -> torch.Tensor:
+
+        if layer.weight.device.type == "cpu" :
+            print (f"{layer} {layer.weight.data.shape} ········· input.device: {x.device} weight.device: {layer.weight.device} weight_scale.device: {layer.weight_scale.device}")
+            layer.weight.data = layer.weight.data.to(x.device)
+        else:
+            pass
 
         if self.use_marlin:
             return apply_fp8_marlin_linear(
