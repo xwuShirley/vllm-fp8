@@ -81,25 +81,27 @@ def device_loading_context(module: torch.nn.Module,
         yield module
 
     finally:
+        pass
         # Restore parameters to their original devices, ignoring new parameters
-        pin_memory = is_pin_memory_available()
-        for name, p in module.named_parameters():
-            if name in original_device_states:
-                original_device: torch.device = original_device_states[name]
-                if original_device.type == "cpu":
-                    # `torch.empty_like` does not support `pin_memory` argument
-                    cpu_data = torch.empty_strided(
-                        size=p.data.size(),
-                        stride=p.data.stride(),
-                        dtype=p.data.dtype,
-                        layout=p.data.layout,
-                        device="cpu",
-                        pin_memory=pin_memory,
-                    )
-                    cpu_data.copy_(p.data)
-                    p.data = cpu_data
-                else:
-                    p.data = p.data.to(original_device)
+        # pin_memory = is_pin_memory_available()
+        # for name, p in module.named_parameters():
+        #     if name in original_device_states:
+        #         original_device: torch.device = original_device_states[name]
+        #         if original_device.type == "cpu":
+        #             # `torch.empty_like` does not support `pin_memory` argument
+        #             cpu_data = torch.empty_strided(
+        #                 size=p.data.size(),
+        #                 stride=p.data.stride(),
+        #                 dtype=p.data.dtype,
+        #                 layout=p.data.layout,
+        #                 device="cpu",
+        #                 pin_memory=pin_memory,
+        #             )
+        #             cpu_data.copy_(p.data)
+        #             p.data = cpu_data
+        #             print ("what's p", p.dtype)
+        #         else:
+        #             p.data = p.data.to(original_device)
         # New parameters or parameters already on target device are untouched
 
 
@@ -165,6 +167,7 @@ def _process_weights_after_loading(model: nn.Module, model_config: ModelConfig,
             # case where cpu offloading is used, where we will move the
             # parameters onto device for processing and back off after.
             with device_loading_context(module, target_device):
+               # print ("what the heck is this", target_device)
                 quant_method.process_weights_after_loading(module)
 
     # Currently only used by MLA.

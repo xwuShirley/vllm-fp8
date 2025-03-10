@@ -213,7 +213,6 @@ class Fp8LinearMethod(LinearMethodBase):
                                       output_dim=0,
                                       weight_loader=weight_loader)
         layer.register_parameter("weight", weight)
-
         # If checkpoint is serialized fp8, load them.
         # Otherwise, wait until process_weights_after_loading.
         if self.quant_config.is_checkpoint_fp8_serialized:
@@ -359,12 +358,6 @@ class Fp8LinearMethod(LinearMethodBase):
               layer: torch.nn.Module,
               x: torch.Tensor,
               bias: Optional[torch.Tensor] = None) -> torch.Tensor:
-
-        if layer.weight.device.type == "cpu" :
-            print (f"{layer} {layer.weight.data.shape} ········· input.device: {x.device} weight.device: {layer.weight.device} weight_scale.device: {layer.weight_scale.device}")
-            layer.weight.data = layer.weight.data.to(x.device)
-        else:
-            pass
 
         if self.use_marlin:
             return apply_fp8_marlin_linear(
