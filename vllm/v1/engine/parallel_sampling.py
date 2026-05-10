@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 from copy import copy
-from typing import Callable, Optional, Union
+from typing import cast
 
-from vllm.outputs import CompletionOutput, RequestOutput
-from vllm.pooling_params import PoolingParams
-from vllm.sampling_params import SamplingParams
+from vllm.outputs import CompletionOutput
+from vllm.sampling_params import RequestOutputKind, SamplingParams
+from vllm.v1.engine import EngineCoreRequest
 from vllm.v1.metrics.stats import IterationStats
 
 
@@ -17,39 +18,36 @@ class ParentRequest:
     """
 
     request_id: str
+    external_req_id: str
     sampling_params: SamplingParams
 
     # To track the completion of child requests
     child_requests: set[str]
 
     # To aggregate child completions when not streaming
-    output_aggregator: Optional[RequestOutput]
+    output_aggregator: list[CompletionOutput]
 
     # To find the max number of generated tokens across all children
     max_num_generation_tokens: int
 
     # To efficiently obtain child sampling params
-    cached_child_sampling_params: Optional[SamplingParams]
+    cached_child_sampling_params: SamplingParams | None
 
-    def __init__(self, request_id: str,
-                 sampling_params: SamplingParams) -> None:
-        self.request_id = request_id
+    def __init__(self, request: EngineCoreRequest) -> None:
+        assert request.external_req_id is not None
+        sampling_params = request.params
+        self.request_id = request.request_id
+        self.external_req_id = request.external_req_id
         self.sampling_params = sampling_params
 
         self.child_requests = set()
-        self.output_aggregator = None
+        self.output_aggregator = (
+            [cast(CompletionOutput, None)] * sampling_params.n
+            if (sampling_params.output_kind == RequestOutputKind.FINAL_ONLY)
+            else []
+        )
         self.max_num_generation_tokens = 0
         self.cached_child_sampling_params = None
-
-    @classmethod
-    def from_params(
-        cls,
-        request_id: str,
-        params: Union[SamplingParams, PoolingParams],
-    ) -> Optional['ParentRequest']:
-        if not isinstance(params, SamplingParams) or params.n == 1:
-            return None
-        return cls(request_id, params)
 
     def _get_child_sampling_params(
         self,
@@ -57,7 +55,7 @@ class ParentRequest:
     ) -> SamplingParams:
         """Efficiently obtain child `sampling_params`
 
-        If `sampling_params.seed` is not `None` then 
+        If `sampling_params.seed` is not `None` then
         each child request requires a unique clone of
         parent `sampling_params` with a unique seed.
 
@@ -84,71 +82,69 @@ class ParentRequest:
 
     def get_child_info(self, index: int) -> tuple[str, SamplingParams]:
         """Get child request ID and sampling params.
-        
+
         Args:
           index: index within `n` child requests.
-        
+
         Returns:
           (request ID, sampling_params) tuple
         """
         child_req_id = f"{index}_{self.request_id}"
         self.child_requests.add(child_req_id)
-        return (child_req_id, self._get_child_sampling_params(index))
-
-    def finish_child_request(self, req_id: str):
-        self.child_requests.remove(req_id)
+        return child_req_id, self._get_child_sampling_params(index)
 
     @property
     def n(self) -> int:
         return self.sampling_params.n
 
-    def make_request_output(
+    def get_outputs(
         self,
-        final_only: bool,
+        child_request_id: str,
         completion_output: CompletionOutput,
-        new_request_output: Callable[[str], RequestOutput],
-    ) -> Optional[RequestOutput]:
-        # Use an existing RequestOutput if we're aggregating
-        request_output = self.output_aggregator
+    ) -> tuple[list[CompletionOutput], bool]:
+        already_finished_and_returned: bool = False
+        if completion_output.finished():
+            if child_request_id in self.child_requests:
+                self.child_requests.remove(child_request_id)
+            else:
+                # child request ID is not available in child_requests
+                # which means the request had finished in previous
+                # batch step and returned to the client earlier
+                already_finished_and_returned = True
 
-        # Make new RequestOutput otherwise
-        if request_output is None:
-            request_output = new_request_output(self.request_id)
+        if self.sampling_params.output_kind != RequestOutputKind.FINAL_ONLY:
+            # If streaming, just return the current output
+            #
+            # DO NOT output finished and already returned child request to client again
+            outputs = [] if already_finished_and_returned else [completion_output]
+        else:
+            # If not streaming, aggregate the n final outputs.
+            self.output_aggregator[completion_output.index] = completion_output
+            outputs = [] if self.child_requests else self.output_aggregator
 
-        # Add a new completion
-        request_output.outputs.append(completion_output)
-
-        # If not streaming, aggregate until all child requests complete
-        if final_only and len(request_output.outputs) != self.n:
-            self.output_aggregator = request_output
-            return None
-
-        # We're done aggregating
-        self.output_aggregator = None
-
-        # Parent completion output list must be sorted by index
-        request_output.outputs = sorted(request_output.outputs,
-                                        key=lambda x: x.index)
-        return request_output
+        finished = not self.child_requests
+        return outputs, finished
 
     def observe_num_generation_tokens(self, num_generation_tokens: int):
-        self.max_num_generation_tokens = max(num_generation_tokens,
-                                             self.max_num_generation_tokens)
+        self.max_num_generation_tokens = max(
+            num_generation_tokens, self.max_num_generation_tokens
+        )
         return self.max_num_generation_tokens
 
     @staticmethod
-    def observe_finished_request(parent_req: Optional['ParentRequest'],
-                                 iteration_stats: IterationStats,
-                                 num_generation_tokens: int):
-
+    def observe_finished_request(
+        parent_req: "ParentRequest | None",
+        iteration_stats: IterationStats,
+        num_generation_tokens: int,
+    ):
         n_param = parent_req.n if parent_req is not None else 1
 
         if parent_req is not None:
             num_generation_tokens = parent_req.observe_num_generation_tokens(
-                num_generation_tokens)
+                num_generation_tokens
+            )
 
         # Child requests finished, we can now record to iteration stats
         if parent_req is None or not parent_req.child_requests:
-            iteration_stats.max_num_generation_tokens_iter.append(
-                num_generation_tokens)
+            iteration_stats.max_num_generation_tokens_iter.append(num_generation_tokens)
             iteration_stats.n_params_iter.append(n_param)

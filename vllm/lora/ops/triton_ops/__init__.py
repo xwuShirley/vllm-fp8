@@ -1,15 +1,33 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from vllm.lora.ops.triton_ops.bgmv_expand import bgmv_expand
-from vllm.lora.ops.triton_ops.bgmv_expand_slice import bgmv_expand_slice
-from vllm.lora.ops.triton_ops.bgmv_shrink import bgmv_shrink
-from vllm.lora.ops.triton_ops.sgmv_expand import sgmv_expand
-from vllm.lora.ops.triton_ops.sgmv_shrink import sgmv_shrink  # noqa: F401
+
+from vllm.lora.ops.triton_ops.fused_moe_lora_fp8_op import (
+    fused_moe_lora_expand_fp8,
+    fused_moe_lora_fp8,
+    fused_moe_lora_shrink_fp8,
+)
+from vllm.lora.ops.triton_ops.fused_moe_lora_op import (
+    fused_moe_lora,
+    fused_moe_lora_expand,
+    fused_moe_lora_shrink,
+)
+from vllm.lora.ops.triton_ops.lora_expand_fp8_op import lora_expand_fp8
+from vllm.lora.ops.triton_ops.lora_expand_op import lora_expand
+from vllm.lora.ops.triton_ops.lora_kernel_metadata import LoRAKernelMeta
+from vllm.lora.ops.triton_ops.lora_shrink_fp8_op import lora_shrink_fp8
+from vllm.lora.ops.triton_ops.lora_shrink_op import lora_shrink
 
 __all__ = [
-    "bgmv_expand",
-    "bgmv_expand_slice",
-    "bgmv_shrink",
-    "sgmv_expand",
-    "sgmv_shrink",
+    "lora_expand",
+    "lora_expand_fp8",
+    "lora_shrink",
+    "lora_shrink_fp8",
+    "LoRAKernelMeta",
+    "fused_moe_lora",
+    "fused_moe_lora_shrink",
+    "fused_moe_lora_expand",
+    "fused_moe_lora_fp8",
+    "fused_moe_lora_shrink_fp8",
+    "fused_moe_lora_expand_fp8",
 ]

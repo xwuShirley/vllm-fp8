@@ -1,78 +1,97 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""The CLI entrypoints of vLLM
 
-# The CLI entrypoint to vLLM.
-import os
-import signal
+Note that all future modules must be lazily loaded within main
+to avoid certain eager import breakage."""
+
+import importlib.metadata
 import sys
+from importlib.util import find_spec
 
-import vllm.entrypoints.cli.openai
-import vllm.entrypoints.cli.serve
-import vllm.version
 from vllm.logger import init_logger
-from vllm.utils import FlexibleArgumentParser
 
 logger = init_logger(__name__)
 
-CMD_MODULES = [
-    vllm.entrypoints.cli.openai,
-    vllm.entrypoints.cli.serve,
-]
-
-
-def register_signal_handlers():
-
-    def signal_handler(sig, frame):
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTSTP, signal_handler)
-
-
-def env_setup():
-    # The safest multiprocessing method is `spawn`, as the default `fork` method
-    # is not compatible with some accelerators. The default method will be
-    # changing in future versions of Python, so we should use it explicitly when
-    # possible.
-    #
-    # We only set it here in the CLI entrypoint, because changing to `spawn`
-    # could break some existing code using vLLM as a library. `spawn` will cause
-    # unexpected behavior if the code is not protected by
-    # `if __name__ == "__main__":`.
-    #
-    # References:
-    # - https://docs.python.org/3/library/multiprocessing.html#contexts-and-start-methods
-    # - https://pytorch.org/docs/stable/notes/multiprocessing.html#cuda-in-multiprocessing
-    # - https://pytorch.org/docs/stable/multiprocessing.html#sharing-cuda-tensors
-    # - https://docs.habana.ai/en/latest/PyTorch/Getting_Started_with_PyTorch_and_Gaudi/Getting_Started_with_PyTorch.html?highlight=multiprocessing#torch-multiprocessing-for-dataloaders
-    if "VLLM_WORKER_MULTIPROC_METHOD" not in os.environ:
-        logger.debug("Setting VLLM_WORKER_MULTIPROC_METHOD to 'spawn'")
-        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
-
 
 def main():
-    env_setup()
+    import vllm.entrypoints.cli.benchmark.main
+    import vllm.entrypoints.cli.collect_env
+    import vllm.entrypoints.cli.launch
+    import vllm.entrypoints.cli.openai
+    import vllm.entrypoints.cli.run_batch
+    import vllm.entrypoints.cli.serve
+    from vllm.entrypoints.utils import VLLM_SUBCMD_PARSER_EPILOG, cli_env_setup
+    from vllm.utils.argparse_utils import FlexibleArgumentParser
 
-    parser = FlexibleArgumentParser(description="vLLM CLI")
-    parser.add_argument('-v',
-                        '--version',
-                        action='version',
-                        version=vllm.version.__version__)
-    subparsers = parser.add_subparsers(required=False, dest="subparser")
-    cmds = {}
-    for cmd_module in CMD_MODULES:
-        new_cmds = cmd_module.cmd_init()
-        for cmd in new_cmds:
-            cmd.subparser_init(subparsers).set_defaults(
-                dispatch_function=cmd.cmd)
-            cmds[cmd.name] = cmd
-    args = parser.parse_args()
-    if args.subparser in cmds:
-        cmds[args.subparser].validate(args)
+    CMD_MODULES = [
+        vllm.entrypoints.cli.openai,
+        vllm.entrypoints.cli.serve,
+        vllm.entrypoints.cli.launch,
+        vllm.entrypoints.cli.benchmark.main,
+        vllm.entrypoints.cli.collect_env,
+        vllm.entrypoints.cli.run_batch,
+    ]
 
-    if hasattr(args, "dispatch_function"):
-        args.dispatch_function(args)
+    cli_env_setup()
+
+    # If `--omni` arg is passed to the CLI, delegate to vLLM Omni's entrypoint handling
+    if "--omni" in sys.argv:
+        # NOTE: Check the spec instead of importing directly here, since things could
+        # fail with ImportError due to mismatched versions if things are moved around.
+        spec = find_spec("vllm_omni")
+        if spec is None:
+            logger.error(
+                "--omni flag requires a valid instance of vllm-omni to be installed."
+            )
+            sys.exit(1)
+
+        from vllm_omni.entrypoints.cli.main import main as omni_main
+
+        logger.info("Delegating entrypoint handling to vllm-omni")
+        omni_main()
     else:
-        parser.print_help()
+        # For 'vllm bench *': use CPU instead of UnspecifiedPlatform by default
+        if len(sys.argv) > 1 and sys.argv[1] == "bench":
+            logger.debug(
+                "Bench command detected, must ensure current platform is not "
+                "UnspecifiedPlatform to avoid device type inference error"
+            )
+            from vllm import platforms
+
+            if platforms.current_platform.is_unspecified():
+                from vllm.platforms.cpu import CpuPlatform
+
+                platforms.current_platform = CpuPlatform()
+                logger.info(
+                    "Unspecified platform detected, switching to CPU Platform instead."
+                )
+
+        parser = FlexibleArgumentParser(
+            description="vLLM CLI",
+            epilog=VLLM_SUBCMD_PARSER_EPILOG.format(subcmd="[subcommand]"),
+        )
+        parser.add_argument(
+            "-v",
+            "--version",
+            action="version",
+            version=importlib.metadata.version("vllm"),
+        )
+        subparsers = parser.add_subparsers(required=False, dest="subparser")
+        cmds = {}
+        for cmd_module in CMD_MODULES:
+            new_cmds = cmd_module.cmd_init()
+            for cmd in new_cmds:
+                cmd.subparser_init(subparsers).set_defaults(dispatch_function=cmd.cmd)
+                cmds[cmd.name] = cmd
+        args = parser.parse_args()
+        if args.subparser in cmds:
+            cmds[args.subparser].validate(args)
+
+        if hasattr(args, "dispatch_function"):
+            args.dispatch_function(args)
+        else:
+            parser.print_help()
 
 
 if __name__ == "__main__":
